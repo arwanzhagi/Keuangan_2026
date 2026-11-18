@@ -28,6 +28,11 @@ const STATE_KEY = "data";
 const LEGACY_DATABASE_NAME = "arwan-finance-local-files";
 const LEGACY_STORE_NAME = "file-handles";
 const TABLES: CsvTable[] = ["transactions", "savings", "debts"];
+const BUNDLED_CSV_PATHS: Record<CsvTable, string> = {
+  transactions: "/data/transactions.csv",
+  savings: "/data/savings.csv",
+  debts: "/data/debts.csv",
+};
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Terjadi kesalahan saat mengakses data lokal.";
@@ -330,6 +335,31 @@ async function migrateLegacyFileData(): Promise<FinanceData | null> {
   };
 }
 
+async function loadBundledData(): Promise<FinanceData | null> {
+  const entries = await Promise.all(TABLES.map(async (table) => {
+    const response = await fetch(BUNDLED_CSV_PATHS[table]);
+    if (!response.ok) return { table, data: null };
+    const contents = await response.text();
+    const data = table === "transactions"
+      ? readTransactions(contents)
+      : table === "savings"
+        ? readSavings(contents)
+        : readDebts(contents);
+    return { table, data };
+  }));
+  const available = entries.filter((entry) => entry.data !== null);
+  if (available.length === 0) return null;
+
+  const data: FinanceData = { transactions: [], savings: [], debts: [] };
+  available.forEach((entry) => {
+    if (!entry.data) return;
+    if (entry.table === "transactions") data.transactions = entry.data as Transaction[];
+    else if (entry.table === "savings") data.savings = entry.data as Saving[];
+    else data.debts = entry.data as Debt[];
+  });
+  return data;
+}
+
 function addMissingDebtContexts(data: FinanceData): FinanceData {
   return {
     ...data,
@@ -384,7 +414,7 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
         if (!stored) {
           let initialData: FinanceData = { transactions: [], savings: [], debts: [] };
           try {
-            initialData = (await migrateLegacyFileData()) || initialData;
+            initialData = (await loadBundledData()) || (await migrateLegacyFileData()) || initialData;
           } catch (migrationError) {
             if (active) setError(`Data file sebelumnya belum dipindahkan: ${errorMessage(migrationError)} Impor CSV untuk memulihkan data.`);
           }
@@ -512,15 +542,6 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
       const context = input.debtContext || "personal";
       const debtType = input.category === "Hutang" ? "payable" : "receivable";
       const debtAmount = context === "personal" ? input.amount : -input.amount;
-      if (context === "external") {
-        const balance = current.debts
-          .filter((entry) =>
-            entry.type === debtType
-            && entry.description.trim().toLocaleLowerCase("id-ID") === input.description.trim().toLocaleLowerCase("id-ID"),
-          )
-          .reduce((sum, entry) => sum + entry.amount, 0);
-        if (input.amount > balance) throw new Error("Jumlah pembayaran melebihi saldo pihak tersebut.");
-      }
       const transactionType =
         input.category === "Hutang"
           ? (context === "personal" ? "income" : "expense")
@@ -590,4 +611,7 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
       {children}
     </LocalFinanceContext.Provider>
   );
+}
+
+  )
 }
