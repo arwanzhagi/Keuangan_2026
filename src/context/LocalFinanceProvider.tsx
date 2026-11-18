@@ -612,6 +612,3 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
     </LocalFinanceContext.Provider>
   );
 }
-
-  )
-}
