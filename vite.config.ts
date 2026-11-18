@@ -6,6 +6,9 @@ import { fileURLToPath, URL } from 'node:url';
 export default defineConfig({
   envPrefix: ['VITE_'],
   plugins: [react()],
+  server: {
+    allowedHosts: ['sb-46ujjwnjs38r.vercel.run'],
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
