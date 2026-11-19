@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { LocalFinanceContext } from "@/context/LocalFinanceContext";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { LocalFinanceContext, type FinanceImportResult } from "@/context/LocalFinanceContext";
 import type { Debt, QuickAddInput, Saving, Transaction } from "@/lib/finance";
-
-type CsvTable = "transactions" | "savings" | "debts";
+import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 interface FinanceData {
   transactions: Transaction[];
@@ -10,32 +10,11 @@ interface FinanceData {
   debts: Debt[];
 }
 
-interface CsvFileHandle {
-  name: string;
-  getFile: () => Promise<File>;
-  queryPermission: (descriptor: { mode: "readwrite" }) => Promise<PermissionState>;
-}
-
-interface CsvHandles {
-  transactions: CsvFileHandle;
-  savings: CsvFileHandle;
-  debts: CsvFileHandle;
-}
-
-const DATABASE_NAME = "arwan-finance-browser-data";
-const STORE_NAME = "finance";
-const STATE_KEY = "data";
-const LEGACY_DATABASE_NAME = "arwan-finance-local-files";
-const LEGACY_STORE_NAME = "file-handles";
-const TABLES: CsvTable[] = ["transactions", "savings", "debts"];
-const BUNDLED_CSV_PATHS: Record<CsvTable, string> = {
-  transactions: "/data/transactions.csv",
-  savings: "/data/savings.csv",
-  debts: "/data/debts.csv",
-};
-
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Terjadi kesalahan saat mengakses data lokal.";
+  if (error instanceof TypeError && /fetch/i.test(error.message)) {
+    return "Tidak dapat terhubung ke Supabase. Periksa URL dan anon key di Environment Variables Bolt, lalu rebuild/redeploy.";
+  }
+  return error instanceof Error ? error.message : "Terjadi kesalahan saat mengakses Supabase.";
 }
 
 function makeId(): string {
@@ -240,126 +219,6 @@ function createCombinedCsv(data: FinanceData): string {
   ].join("\r\n") + "\r\n";
 }
 
-function openFinanceDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Gagal membuka penyimpanan lokal browser."));
-  });
-}
-
-async function loadBrowserData(): Promise<FinanceData | null> {
-  const database = await openFinanceDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readonly");
-    const request = transaction.objectStore(STORE_NAME).get(STATE_KEY);
-    let data: FinanceData | null = null;
-    request.onsuccess = () => {
-      data = (request.result as FinanceData | undefined) || null;
-    };
-    request.onerror = () => reject(request.error || new Error("Gagal membaca data lokal browser."));
-    transaction.oncomplete = () => {
-      database.close();
-      resolve(data);
-    };
-    transaction.onerror = () => reject(transaction.error || new Error("Gagal membaca data lokal browser."));
-  });
-}
-
-async function saveBrowserData(data: FinanceData): Promise<void> {
-  const database = await openFinanceDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(data, STATE_KEY);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error || new Error("Gagal menyimpan data lokal browser."));
-    };
-    transaction.onabort = () => {
-      database.close();
-      reject(transaction.error || new Error("Penyimpanan data lokal dibatalkan."));
-    };
-  });
-}
-
-async function loadLegacyHandles(): Promise<Partial<CsvHandles> | null> {
-  const database = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(LEGACY_DATABASE_NAME);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Gagal memeriksa izin file lama."));
-  });
-  if (!database.objectStoreNames.contains(LEGACY_STORE_NAME)) {
-    database.close();
-    return null;
-  }
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(LEGACY_STORE_NAME, "readonly");
-    const store = transaction.objectStore(LEGACY_STORE_NAME);
-    const handles: Partial<CsvHandles> = {};
-    let remaining = 3;
-    TABLES.forEach((table) => {
-      const request = store.get(`${table}.csv`);
-      request.onsuccess = () => {
-        const handle = request.result as CsvFileHandle | undefined;
-        if (handle) handles[table] = handle;
-        remaining -= 1;
-        if (remaining === 0) resolve(handles);
-      };
-      request.onerror = () => reject(request.error || new Error("Gagal membaca izin file lama."));
-    });
-    transaction.oncomplete = () => database.close();
-    transaction.onerror = () => reject(transaction.error || new Error("Gagal membaca izin file lama."));
-  });
-}
-
-async function migrateLegacyFileData(): Promise<FinanceData | null> {
-  const saved = await loadLegacyHandles();
-  if (!saved || !TABLES.every((table) => saved[table])) return null;
-  const handles = saved as CsvHandles;
-  const permissions = await Promise.all(TABLES.map((table) => handles[table].queryPermission({ mode: "readwrite" })));
-  if (!permissions.every((permission) => permission === "granted")) return null;
-
-  const contents = {} as Record<CsvTable, string>;
-  for (const table of TABLES) {
-    contents[table] = await (await handles[table].getFile()).text();
-  }
-  return {
-    transactions: readTransactions(contents.transactions),
-    savings: readSavings(contents.savings),
-    debts: readDebts(contents.debts),
-  };
-}
-
-async function loadBundledData(): Promise<FinanceData | null> {
-  const entries = await Promise.all(TABLES.map(async (table) => {
-    const response = await fetch(BUNDLED_CSV_PATHS[table]);
-    if (!response.ok) return { table, data: null };
-    const contents = await response.text();
-    const data = table === "transactions"
-      ? readTransactions(contents)
-      : table === "savings"
-        ? readSavings(contents)
-        : readDebts(contents);
-    return { table, data };
-  }));
-  const available = entries.filter((entry) => entry.data !== null);
-  if (available.length === 0) return null;
-
-  const data: FinanceData = { transactions: [], savings: [], debts: [] };
-  available.forEach((entry) => {
-    if (!entry.data) return;
-    if (entry.table === "transactions") data.transactions = entry.data as Transaction[];
-    else if (entry.table === "savings") data.savings = entry.data as Saving[];
-    else data.debts = entry.data as Debt[];
-  });
-  return data;
-}
-
 function addMissingDebtContexts(data: FinanceData): FinanceData {
   return {
     ...data,
@@ -370,102 +229,103 @@ function addMissingDebtContexts(data: FinanceData): FinanceData {
   };
 }
 
-function makeTransaction(input: {
-  amount: number;
-  type: "income" | "expense";
-  category: string;
-  description: string;
-  date: string;
-}): Transaction {
-  return { ...input, id: makeId(), created_at: new Date().toISOString() };
-}
-
-function makeSavingRow(row: Omit<Saving, "id" | "created_at">): Saving {
-  return { ...row, id: makeId(), created_at: new Date().toISOString() };
-}
-
-function makeDebtRow(row: Omit<Debt, "id" | "created_at">): Debt {
-  return { ...row, id: makeId(), created_at: new Date().toISOString() };
-}
-
 export function LocalFinanceProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [data, setData] = useState<FinanceData>({ transactions: [], savings: [], debts: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const dataRef = useRef(data);
-  const initializedRef = useRef(false);
-  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  const applyData = useCallback((next: FinanceData) => {
-    dataRef.current = next;
-    setData(next);
+  const refresh = useCallback(async () => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const [transactionsResult, savingsResult, debtsResult] = await Promise.all([
+      supabase.from("transactions").select("*").order("date", { ascending: false }),
+      supabase.from("savings").select("*").order("date", { ascending: false }),
+      supabase.from("debts").select("*").order("date", { ascending: false }),
+    ]);
+    const resultError = transactionsResult.error || savingsResult.error || debtsResult.error;
+    if (resultError) throw resultError;
+
+    setData(addMissingDebtContexts({
+      transactions: (transactionsResult.data || []) as Transaction[],
+      savings: (savingsResult.data || []) as Saving[],
+      debts: (debtsResult.data || []) as Debt[],
+    }));
+    setError(null);
   }, []);
 
+  const refreshAfterWrite = useCallback(async () => {
+    try {
+      await refresh();
+    } catch (loadError) {
+      setError(`Perubahan tersimpan, tetapi data gagal dimuat ulang: ${errorMessage(loadError)}`);
+    }
+  }, [refresh]);
+
   useEffect(() => {
+    if (!user || !supabase) {
+      setLoading(false);
+      return;
+    }
+
+    const client = supabase;
     let active = true;
-    const initialize = async () => {
+    const load = async () => {
       try {
-        let stored = await loadBrowserData();
-        if (stored) {
-          const needsContextMigration = stored.debts.some((debt) => !debt.context);
-          stored = addMissingDebtContexts(stored);
-          if (needsContextMigration) await saveBrowserData(stored);
-        }
-        if (!stored) {
-          let initialData: FinanceData = { transactions: [], savings: [], debts: [] };
-          try {
-            initialData = (await loadBundledData()) || (await migrateLegacyFileData()) || initialData;
-          } catch (migrationError) {
-            if (active) setError(`Data file sebelumnya belum dipindahkan: ${errorMessage(migrationError)} Impor CSV untuk memulihkan data.`);
-          }
-          await saveBrowserData(initialData);
-          stored = initialData;
-        }
-        if (active) {
-          applyData(stored);
-          initializedRef.current = true;
-        }
+        await refresh();
       } catch (loadError) {
         if (active) setError(errorMessage(loadError));
       } finally {
         if (active) setLoading(false);
       }
     };
-    void initialize();
+    void load();
+
+    const channel = client
+      .channel(`finance-${user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, () => {
+        void refresh().catch((loadError) => {
+          if (active) setError(`Gagal menyinkronkan data: ${errorMessage(loadError)}`);
+        });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "savings" }, () => {
+        void refresh().catch((loadError) => {
+          if (active) setError(`Gagal menyinkronkan data: ${errorMessage(loadError)}`);
+        });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "debts" }, () => {
+        void refresh().catch((loadError) => {
+          if (active) setError(`Gagal menyinkronkan data: ${errorMessage(loadError)}`);
+        });
+      })
+      .subscribe((status, subscriptionError) => {
+        if (status === "CHANNEL_ERROR" && subscriptionError && active) {
+          setError(`Sinkronisasi realtime gagal: ${subscriptionError.message}`);
+        }
+      });
+
     return () => {
       active = false;
+      void client.removeChannel(channel);
     };
-  }, [applyData]);
+  }, [user, refresh]);
 
-  const mutate = useCallback(<T,>(change: (current: FinanceData) => { next: FinanceData; result: T }): Promise<T> => {
-    const operation = writeQueueRef.current.then(async () => {
-      if (!initializedRef.current) throw new Error("Penyimpanan lokal belum siap. Muat ulang aplikasi.");
-      const { next, result } = change(dataRef.current);
-      await saveBrowserData(next);
-      applyData(next);
-      setError(null);
-      return result;
-    });
-    writeQueueRef.current = operation.then(() => undefined, () => undefined);
-    return operation;
-  }, [applyData]);
+  const importCsvFiles = useCallback(async (files: File[]): Promise<FinanceImportResult> => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    if (files.length === 0) throw new Error("Pilih setidaknya satu file CSV.");
 
-  const importCsvFiles = useCallback((files: File[]) => {
-    if (files.length === 0) return Promise.reject(new Error("Pilih setidaknya satu file CSV."));
-
-    return Promise.all(files.map(async (file) => ({
+    const entries = await Promise.all(files.map(async (file) => ({
       name: file.name.toLocaleLowerCase("id-ID"),
       contents: await file.text(),
-    }))).then((entries) => {
-      const combinedFiles = entries.filter((entry) => entry.name === "finance.csv");
-      if (combinedFiles.length > 1 || (combinedFiles.length === 1 && entries.length > 1)) {
-        throw new Error("Impor finance.csv gabungan secara terpisah dari CSV per kategori.");
-      }
-      if (combinedFiles.length === 1) {
-        const imported = readCombinedCsv(combinedFiles[0].contents);
-        return mutate(() => ({ next: imported, result: imported }));
-      }
+    })));
+    const combinedFiles = entries.filter((entry) => entry.name === "finance.csv");
+    if (combinedFiles.length > 1 || (combinedFiles.length === 1 && entries.length > 1)) {
+      throw new Error("Impor finance.csv gabungan secara terpisah dari CSV per kategori.");
+    }
 
+    let imported: FinanceData;
+    if (combinedFiles.length === 1) {
+      imported = readCombinedCsv(combinedFiles[0].contents);
+    } else {
       const updates: Partial<FinanceData> = {};
       entries.forEach(({ name, contents }) => {
         if (name === "transactions.csv") {
@@ -481,15 +341,27 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
           throw new Error(`Nama file "${name}" tidak dikenal. Gunakan finance.csv atau transactions.csv, savings.csv, debts.csv.`);
         }
       });
-      return mutate((current) => {
-        const next = { ...current, ...updates };
-        return { next, result: next };
-      });
+      imported = { ...data, ...updates };
+    }
+
+    const { error: importError } = await supabase.rpc("replace_finance_dataset", {
+      p_transactions: entries.some((entry) => entry.name === "finance.csv") || entries.some((entry) => entry.name === "transactions.csv")
+        ? imported.transactions
+        : null,
+      p_savings: entries.some((entry) => entry.name === "finance.csv") || entries.some((entry) => entry.name === "savings.csv")
+        ? imported.savings
+        : null,
+      p_debts: entries.some((entry) => entry.name === "finance.csv") || entries.some((entry) => entry.name === "debts.csv")
+        ? imported.debts
+        : null,
     });
-  }, [mutate]);
+    if (importError) throw importError;
+    await refreshAfterWrite();
+    return { transactions: imported.transactions, savings: imported.savings, debts: imported.debts };
+  }, [data, refreshAfterWrite]);
 
   const exportCsvFile = useCallback(() => {
-    const blob = new Blob([createCombinedCsv(dataRef.current)], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([createCombinedCsv(data)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -497,102 +369,69 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }, []);
+  }, [data]);
 
-  const addFinanceAction = useCallback((input: QuickAddInput) => mutate((current) => {
-    let transaction: Transaction;
-    let savings = current.savings;
-    let debts = current.debts;
+  const addFinanceAction = useCallback(async (input: QuickAddInput) => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const { data: transaction, error: actionError } = await supabase
+      .rpc("record_financial_action", {
+        p_action: input.action,
+        p_amount: input.amount,
+        p_category: input.category,
+        p_date: input.date,
+        p_debt_context: input.debtContext || null,
+        p_savings_category: input.savingsCategory || null,
+        p_description: input.description,
+      })
+      .single();
+    if (actionError) throw actionError;
+    await refreshAfterWrite();
+    return transaction as Transaction;
+  }, [refreshAfterWrite]);
 
-    if (input.action === "income" || input.action === "expense") {
-      transaction = makeTransaction({
-        amount: input.amount,
-        type: input.action,
-        category: input.category,
-        description: input.description,
-        date: input.date,
-      });
-    } else if (input.action === "withdrawal") {
-      const category = input.savingsCategory || "Umum";
-      const available = current.savings
-        .filter((entry) => (entry.category || "Umum").toLocaleLowerCase("id-ID") === category.toLocaleLowerCase("id-ID"))
-        .reduce((sum, entry) => sum + entry.amount, 0);
-      if (input.amount > available) throw new Error(`Saldo tabungan kategori ${category} tidak mencukupi.`);
-      transaction = makeTransaction({
-        amount: input.amount,
-        type: "income",
-        category: "Tabungan",
-        description: `Tarik tabungan - ${input.description}`,
-        date: input.date,
-      });
-      savings = [
-        makeSavingRow({
-          amount: -input.amount,
-          category,
-          description: `Tarik tabungan - ${input.description}`,
-          date: input.date,
-          source_transaction_id: transaction.id,
-        }),
-        ...current.savings,
-      ];
-    } else {
-      if (input.category !== "Hutang" && input.category !== "Piutang") {
-        throw new Error("Kategori harus Hutang atau Piutang.");
-      }
-      const context = input.debtContext || "personal";
-      const debtType = input.category === "Hutang" ? "payable" : "receivable";
-      const debtAmount = context === "personal" ? input.amount : -input.amount;
-      const transactionType =
-        input.category === "Hutang"
-          ? (context === "personal" ? "income" : "expense")
-          : (context === "personal" ? "expense" : "income");
-      transaction = makeTransaction({
-        amount: input.amount,
-        type: transactionType,
-        category: input.category,
-        description: input.description,
-        date: input.date,
-      });
-      debts = [
-        makeDebtRow({
-          amount: debtAmount,
-          type: debtType,
-          context,
-          description: input.description,
-          date: input.date,
-          source_transaction_id: transaction.id,
-        }),
-        ...current.debts,
-      ];
-    }
+  const deleteTransaction = useCallback(async (id: string) => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const { error: deleteError } = await supabase.from("transactions").delete().eq("id", id);
+    if (deleteError) throw deleteError;
+    await refreshAfterWrite();
+  }, [refreshAfterWrite]);
 
-    return {
-      next: { transactions: [transaction, ...current.transactions], savings, debts },
-      result: transaction,
-    };
-  }), [mutate]);
+  const addSaving = useCallback(async (saving: Omit<Saving, "id">) => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const { error: insertError } = await supabase.from("savings").insert({
+      ...saving,
+      id: makeId(),
+      created_at: new Date().toISOString(),
+    });
+    if (insertError) throw insertError;
+    await refreshAfterWrite();
+  }, [refreshAfterWrite]);
 
-  const deleteTransaction = useCallback((id: string) => mutate((current) => ({
-    next: {
-      transactions: current.transactions.filter((transaction) => transaction.id !== id),
-      savings: current.savings.filter((saving) => saving.source_transaction_id !== id),
-      debts: current.debts.filter((debt) => debt.source_transaction_id !== id),
-    },
-    result: undefined,
-  })), [mutate]);
+  const deleteSaving = useCallback(async (id: string) => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const { error: deleteError } = await supabase.from("savings").delete().eq("id", id);
+    if (deleteError) throw deleteError;
+    await refreshAfterWrite();
+  }, [refreshAfterWrite]);
 
-  const addSaving = useCallback((saving: Omit<Saving, "id">) => mutate((current) => ({
-    next: {
-      ...current,
-      savings: [{ ...saving, id: makeId(), created_at: new Date().toISOString() }, ...current.savings],
-    },
-    result: undefined,
-  })), [mutate]);
+  const addDebt = useCallback(async (debt: Omit<Debt, "id">) => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const { error: insertError } = await supabase.from("debts").insert({
+      ...debt,
+      id: makeId(),
+      created_at: new Date().toISOString(),
+      source_transaction_id: null,
+    });
+    if (insertError) throw insertError;
+    await refreshAfterWrite();
+  }, [refreshAfterWrite]);
 
-  const deleteSaving = useCallback((id: string) => mutate((current) => ({
-    next: { ...current, savings: current.savings.filter((saving) => saving.id !== id) },
-    result: undefined,
-  })), [mutate]);
+  const deleteDebt = useCallback(async (id: string) => {
+    if (!supabase) throw new Error("Konfigurasi Supabase belum tersedia.");
+    const { error: deleteError } = await supabase.from("debts").delete().eq("id", id);
+    if (deleteError) throw deleteError;
+    await refreshAfterWrite();
+  }, [refreshAfterWrite]);
 
   return (
     <LocalFinanceContext.Provider
@@ -606,6 +445,8 @@ export function LocalFinanceProvider({ children }: { children: ReactNode }) {
         deleteTransaction,
         addSaving,
         deleteSaving,
+        addDebt,
+        deleteDebt,
       }}
     >
       {children}

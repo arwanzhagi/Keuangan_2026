@@ -1,55 +1,38 @@
 # Keuangan Arwan Resita
 
-Dashboard keuangan berbasis React/Vite. Transaksi, tabungan, dan hutang/piutang disimpan otomatis di IndexedDB pada browser yang digunakan. Tidak ada server, database cloud, atau API untuk data keuangan.
+Dashboard keuangan React/Vite. Data transaksi, tabungan, dan hutang/piutang disimpan di Supabase dan disinkronkan realtime. Akun Arwan dan Resita dibuat pada website dan disimpan lokal di browser, bukan pada tabel database.
 
-## Data dan privasi
+## Jalankan di Bolt
 
-- Aplikasi langsung terbuka tanpa perlu memilih file.
-- Data baru disimpan otomatis di penyimpanan lokal browser (IndexedDB).
-- Aplikasi tidak memiliki login/autentikasi. Siapa pun yang memakai profil browser yang sama dapat membuka data lokal di perangkat tersebut.
-- Impor CSV bersifat opsional. Impor `finance.csv` hasil ekspor aplikasi, atau pilih satu/lebih file bernama `transactions.csv`, `savings.csv`, dan `debts.csv`. Impor `finance.csv` mengganti seluruh data; impor CSV per kategori hanya mengganti kategori yang dipilih.
-- Gunakan **Ekspor CSV** untuk mengunduh satu file `finance.csv` berisi transaksi, tabungan, dan hutang/piutang.
-- File CSV tidak dikirim ke Cloudflare, GitHub, atau layanan database.
-- `local-data/` berisi data awal lokal dan diabaikan Git. Jangan menghapus `.gitignore` atau mengunggah CSV ke GitHub.
-- Penyimpanan browser terikat pada origin dan browser. Data di `localhost` tidak otomatis tersedia di domain Cloudflare; ekspor lalu impor CSV di situs yang sudah di-deploy untuk memindahkannya. Data juga tidak tersinkron antarperangkat/browser.
+1. Jalankan semua file di `supabase/migrations/` berurutan menggunakan Supabase CLI atau SQL Editor. Migration terakhir menambahkan kolom kategori tabungan/konteks hutang, RPC impor, dan realtime.
+2. Salin `.env.example` sebagai template environment. Masukkan `VITE_SUPABASE_URL` dan `VITE_SUPABASE_ANON_KEY` ke **Environment Variables** Bolt, lalu rebuild/redeploy.
+3. Pada kunjungan pertama website, buat password untuk Arwan (Super Admin) dan Resita (User biasa). Akun awal dibuat langsung pada browser tersebut; password hanya disimpan sebagai hash.
+4. Gunakan browser dan alamat website yang sama untuk memakai akun yang sudah dibuat. Browser atau perangkat lain memiliki penyimpanan akun lokal yang berbeda.
 
-Skema CSV gabungan:
+Jika masih melihat layar lama yang hanya meminta password, atau pesan `Failed to fetch`, website yang dibuka belum memakai source terbaru atau konfigurasi Bolt belum diisi. Di source terbaru akan tampil pengaturan awal akun dan pesan konfigurasi Supabase bila URL/key belum tersedia.
 
-```text
-finance.csv: record_type,id,amount,type,category,description,date,created_at,source_transaction_id,context
-```
+## Batas keamanan akun lokal
 
-`record_type` berisi `transaction`, `saving`, atau `debt`. Jenis transaksi berisi `income` atau `expense`; jenis hutang/piutang berisi `payable` atau `receivable`. Kolom `context` hutang/piutang berisi `personal` atau `external` (kosong dianggap `personal`).
+Akun lokal hanya mengatur tampilan website: user biasa tidak melihat tombol hapus. Karena tidak menggunakan Supabase Auth/server, role tersebut **tidak dapat mengunci akses langsung ke database**. Database memakai Supabase anon key pada browser. Jangan gunakan mode ini untuk data sensitif di website publik; penguncian yang sungguh-sungguh memerlukan autentikasi server-side.
 
-## Jalankan lokal di Windows
+## Tabel dan data
+
+- `transactions`: pemasukan dan pengeluaran.
+- `savings`: tabungan beserta kategori.
+- `debts`: hutang/piutang beserta konteks.
+
+Tambah/hapus lewat bagian Hutang & Piutang hanya mengubah tabel `debts`, tidak membuat perubahan pada `transactions`. CSV bisa diimpor dari website sebagai Super Admin. Impor CSV mengganti kategori data yang dipilih; `finance.csv` mengganti semua kategori.
+
+Folder `local-data/` sengaja tidak disertakan di Git untuk menjaga privasi. Data transaksi CSV yang belum ada sudah ditambahkan ke tabel Supabase; transaksi lama yang tidak terdapat di CSV dipertahankan. Lima baris tabungan juga sudah ada. Setelah migration dijalankan, impor `savings.csv` untuk menyelaraskan kategorinya. File `debts.csv` saat ini hanya berisi header.
+
+Jangan pernah memasukkan Supabase `service_role` key ke frontend/Bolt.
+
+## Jalankan lokal
 
 ```powershell
-Set-Location 'D:\Arwan\Daily\2026-11-18\project'
 npm.cmd install
 npm.cmd run dev
-```
-
-Buka URL yang ditampilkan Vite, biasanya `http://localhost:5173`. Aplikasi menyimpan data baru secara otomatis. Untuk memuat data CSV yang sudah ada, pilih **Impor CSV** dan pilih file yang diinginkan dari folder `local-data`.
-
-Pemeriksaan proyek:
-
-```powershell
 npm.cmd run typecheck
 npm.cmd run lint
 npm.cmd run build
 ```
-
-## Deploy ke Cloudflare Pages dari GitHub
-
-Ini adalah **Cloudflare Pages** (hosting web statis), bukan Cloudflare Tunnel. Push source code ke repository GitHub, lalu di Cloudflare pilih **Workers & Pages → Create application → Pages → Connect to Git** dan hubungkan repository tersebut.
-
-Pengaturan build:
-
-| Pengaturan | Nilai |
-| --- | --- |
-| Build command | `npm run build` |
-| Build output directory | `dist` |
-| Node.js | 22 (ditentukan oleh `.nvmrc`) |
-| Environment variables | Tidak diperlukan |
-
-Setelah deploy, buka situs melalui HTTPS dan pilih CSV dari perangkat yang sedang digunakan. Website Cloudflare hanya mengirimkan aset aplikasi; isi CSV tetap berada di perangkat pengguna. Jika perlu sinkronisasi antarperangkat, diperlukan layanan penyimpanan terpisah—aplikasi ini memang tidak mengaktifkannya.

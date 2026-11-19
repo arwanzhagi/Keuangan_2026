@@ -1,5 +1,6 @@
+import { useRef, type ChangeEvent } from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, Wallet, Sparkles, Download } from "lucide-react";
+import { TrendingUp, TrendingDown, Wallet, Sparkles, FileSpreadsheet, Download, Upload } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import Layout from "@/components/Layout";
 import WealthWave from "@/components/WealthWave";
@@ -17,17 +18,22 @@ import FinancialSnapshot from "@/components/afford/FinancialSnapshot";
 import AssetOverview from "@/components/AssetOverview";
 import { dailySpendingRate, formatRupiah, type QuickAddInput } from "@/lib/finance";
 import { useLocalFinance } from "@/context/LocalFinanceContext";
+import { useAuth } from "@/context/AuthContext";
 
 export default function Dashboard() {
   const { toast } = useToast();
+  const { user, role, signOut } = useAuth();
   const {
     transactions,
     savings: savingsEntries,
     debts,
     addFinanceAction,
     deleteTransaction,
+    importCsvFiles,
     exportCsvFile,
+    error,
   } = useLocalFinance();
+  const importInputRef = useRef<HTMLInputElement>(null);
   const savings = savingsEntries.reduce((sum, saving) => sum + saving.amount, 0);
   const receivable = debts
     .filter((entry) => entry.type === "receivable")
@@ -76,8 +82,91 @@ export default function Dashboard() {
   const { daily: avgDailySpend, monthly: monthlySpendEstimate } = dailySpendingRate(txList);
   const netWorthTotal = totalBalance + savings + receivable - payable;
 
+  const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+    try {
+      const imported = await importCsvFiles(files);
+      toast({
+        title: "Impor CSV berhasil",
+        description: `${imported.transactions.length} transaksi, ${imported.savings.length} tabungan, dan ${imported.debts.length} hutang/piutang tersimpan di browser ini.`,
+      });
+    } catch (importError) {
+      toast({
+        title: "Gagal mengimpor CSV",
+        description: importError instanceof Error ? importError.message : "Silakan periksa file CSV dan coba lagi.",
+        variant: "destructive",
+      });
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } catch (signOutError) {
+      toast({
+        title: "Gagal keluar",
+        description: signOutError instanceof Error ? signOutError.message : "Silakan coba lagi.",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <Layout>
+        <div className="px-5 md:px-10 pt-5 max-w-7xl mx-auto">
+          <div className="glass rounded-2xl border border-white/60 p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <FileSpreadsheet className="mt-0.5 h-5 w-5 flex-none text-accent" />
+              <div>
+                <p className="text-sm font-semibold">Data tersinkron otomatis ke Supabase</p>
+                <p className="text-xs text-muted-foreground">Login: {user?.username} · {role === "admin" ? "Super Admin" : "User biasa"}</p>
+                {error && <p role="alert" className="mt-1 text-xs text-red-600">{error}</p>}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {role === "admin" && (
+                <>
+                  <input
+                    ref={importInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    multiple
+                    onChange={(event) => { void handleImport(event); }}
+                    className="hidden"
+                    aria-label="Pilih CSV untuk diimpor"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => importInputRef.current?.click()}
+                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-4 py-2 text-xs font-semibold hover:border-accent"
+                  >
+                    <Upload className="h-4 w-4" />
+                    Impor CSV
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={exportCsvFile}
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-4 py-2 text-xs font-semibold hover:border-accent"
+              >
+                <Download className="h-4 w-4" />
+                Ekspor CSV
+              </button>
+              <button
+                type="button"
+                onClick={() => { void handleSignOut(); }}
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-4 py-2 text-xs font-semibold hover:border-red-400"
+              >
+                Keluar
+              </button>
+            </div>
+          </div>
+        </div>
+
         {/* ===== PULSE DASHBOARD ===== */}
         <section id="pulse" className="relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-teal-900/20 via-background/40 to-background" />
@@ -205,19 +294,11 @@ export default function Dashboard() {
               <span className="font-heading font-bold">Keuangan Arwan Resita</span>
             </div>
             <p className="text-xs text-muted-foreground text-center">Berjalan lokal di browser · Data tidak diunggah · Tidak tersinkron antarperangkat</p>
-            <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
-              <a href="#pulse" className="transition-colors hover:text-foreground">Pulse</a>
-              <a href="#stream" className="transition-colors hover:text-foreground">Stream</a>
-              <a href="#summary" className="transition-colors hover:text-foreground">Summary</a>
-              <a href="#horizon" className="transition-colors hover:text-foreground">Horizon</a>
-              <button
-                type="button"
-                onClick={exportCsvFile}
-                className="inline-flex items-center gap-2 rounded-xl border border-border bg-white/70 px-3 py-2 font-semibold text-foreground transition-colors hover:border-accent"
-              >
-                <Download className="h-4 w-4" />
-                Ekspor data
-              </button>
+            <div className="flex gap-4 text-xs text-muted-foreground">
+              <a href="#pulse" className="hover:text-foreground transition-colors">Pulse</a>
+              <a href="#stream" className="hover:text-foreground transition-colors">Stream</a>
+              <a href="#summary" className="hover:text-foreground transition-colors">Summary</a>
+              <a href="#horizon" className="hover:text-foreground transition-colors">Horizon</a>
             </div>
           </div>
         </footer>

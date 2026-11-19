@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, HandCoins, Wallet } from "lucide-react";
-import { formatRupiah, type Debt } from "@/lib/finance";
+import { AnimatePresence, motion } from "framer-motion";
+import { ArrowDownLeft, ArrowUpRight, HandCoins, Plus, Trash2, Wallet, X } from "lucide-react";
+import { formatRupiah, type Debt, type DebtContext } from "@/lib/finance";
 import { useLocalFinance } from "@/context/LocalFinanceContext";
+import { useToast } from "@/components/ui/use-toast";
+import { useAuth } from "@/context/AuthContext";
 
 type ContextFilter = "all" | "personal" | "external";
 type DebtTypeFilter = "all" | Debt["type"];
@@ -40,7 +43,15 @@ function summarizeDebts(entries: Debt[], key: DebtSummary["key"], label: string)
 }
 
 export default function DebtPanel() {
-  const { debts } = useLocalFinance();
+  const { toast } = useToast();
+  const { debts, addDebt, deleteDebt } = useLocalFinance();
+  const { role } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [type, setType] = useState<Debt["type"]>("payable");
+  const [context, setContext] = useState<DebtContext>("personal");
+  const [description, setDescription] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [contextFilter, setContextFilter] = useState<ContextFilter>("all");
   const [typeFilter, setTypeFilter] = useState<DebtTypeFilter>("all");
   const [monthFilter, setMonthFilter] = useState("all");
@@ -92,18 +103,66 @@ export default function DebtPanel() {
       ),
     ];
 
+  const handleAdd = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value <= 0 || !description.trim()) return;
+
+    try {
+      await addDebt({
+        amount: value,
+        type,
+        context,
+        description: description.trim(),
+        date,
+        source_transaction_id: null,
+      });
+      toast({ title: "Hutang/piutang tersimpan", description: formatRupiah(value) });
+      setAmount("");
+      setDescription("");
+      setOpen(false);
+    } catch (error) {
+      toast({
+        title: "Gagal menyimpan",
+        description: error instanceof Error ? error.message : "Silakan coba lagi.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteDebt(id);
+      toast({ title: "Hutang/piutang dihapus" });
+    } catch (error) {
+      toast({
+        title: "Gagal menghapus",
+        description: error instanceof Error ? error.message : "Silakan coba lagi.",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <section id="debts" className="px-5 md:px-10 py-16 max-w-7xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center">
-          <HandCoins className="w-5 h-5 text-sky-600" />
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center">
+            <HandCoins className="w-5 h-5 text-sky-600" />
+          </div>
+          <div>
+            <h2 className="font-heading font-bold text-xl">Hutang &amp; Piutang</h2>
+            <p className="text-sm text-muted-foreground">
+              {contextFilter === "all" ? "Pribadi dan Eksternal ditampilkan terpisah." : `Riwayat ${contextFilter === "personal" ? "Pribadi" : "Eksternal"}.`}
+            </p>
+          </div>
         </div>
-        <div>
-          <h2 className="font-heading font-bold text-xl">Hutang &amp; Piutang</h2>
-          <p className="text-sm text-muted-foreground">
-            {contextFilter === "all" ? "Pribadi dan Eksternal ditampilkan terpisah." : `Riwayat ${contextFilter === "personal" ? "Pribadi" : "Eksternal"}.`}
-          </p>
-        </div>
+        <button
+          onClick={() => setOpen(true)}
+          className="flex items-center gap-2 glass rounded-xl px-4 py-2 text-sm border border-white/60 hover:border-accent transition-colors"
+        >
+          <Plus className="w-4 h-4" /> Tambah
+        </button>
       </div>
 
       <div className="glass rounded-2xl border border-white/60 p-4 mb-5">
@@ -222,9 +281,20 @@ export default function DebtPanel() {
                               : <ArrowUpRight className="h-5 w-5 text-orange-600" />}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-bold text-slate-800">
-                              {isPayment ? `Pembayaran ${isReceivable ? "Piutang" : "Hutang"}` : isReceivable ? "Piutang" : "Hutang"}
-                            </p>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-bold text-slate-800">
+                                {isPayment ? `Pembayaran ${isReceivable ? "Piutang" : "Hutang"}` : isReceivable ? "Piutang" : "Hutang"}
+                              </p>
+                              {role === "admin" && (
+                                <button
+                                  onClick={() => { void handleDelete(entry.id); }}
+                                  aria-label={`Hapus ${entry.description}`}
+                                  className="text-slate-300 transition-colors hover:text-red-500"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              )}
+                            </div>
                             <p className="text-xs text-slate-400">{cardDate(entry.date)}</p>
                           </div>
                         </div>
@@ -242,6 +312,67 @@ export default function DebtPanel() {
           })}
         </div>
       )}
+
+      <AnimatePresence>
+        {open && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setOpen(false)}
+              className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 50, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 50, scale: 0.95 }}
+              className="fixed inset-x-0 bottom-0 z-50 mx-auto max-h-[100dvh] w-full max-w-lg overflow-y-auto p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]"
+            >
+              <div className="glass rounded-3xl border border-white/60 p-4 shadow-2xl sm:p-6">
+                <div className="mb-5 flex items-center justify-between">
+                  <h3 className="font-heading text-lg font-bold">Tambah Hutang/Piutang</h3>
+                  <button onClick={() => setOpen(false)} className="p-1 text-muted-foreground hover:text-foreground" aria-label="Tutup">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+                <form onSubmit={(event) => { void handleAdd(event); }} className="space-y-4">
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Jenis</span>
+                    <select value={type} onChange={(event) => setType(event.target.value as Debt["type"])} className="w-full rounded-xl border border-white/60 bg-white/70 px-4 py-2.5 text-sm">
+                      <option value="payable">Hutang</option>
+                      <option value="receivable">Piutang</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Konteks</span>
+                    <select value={context} onChange={(event) => setContext(event.target.value as DebtContext)} className="w-full rounded-xl border border-white/60 bg-white/70 px-4 py-2.5 text-sm">
+                      <option value="personal">Pribadi</option>
+                      <option value="external">Eksternal</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Jumlah (Rp)</span>
+                    <input type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0" required className="w-full rounded-xl border border-white/60 bg-white/70 px-4 py-2.5 text-sm" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Nama pihak / deskripsi</span>
+                    <input type="text" value={description} onChange={(event) => setDescription(event.target.value)} required className="w-full rounded-xl border border-white/60 bg-white/70 px-4 py-2.5 text-sm" />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Tanggal</span>
+                    <input type="date" value={date} onChange={(event) => setDate(event.target.value)} required className="w-full rounded-xl border border-white/60 bg-white/70 px-4 py-2.5 text-sm" />
+                  </label>
+                  <button type="submit" className="w-full rounded-xl bg-gradient-to-r from-sky-600 to-teal-500 py-3 text-sm font-semibold text-white">
+                    Simpan
+                  </button>
+                </form>
+                <p className="mt-3 text-center text-xs text-muted-foreground">Data ini disimpan terpisah dan tidak menambah pemasukan/pengeluaran.</p>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </section>
   );
 }

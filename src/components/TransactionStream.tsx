@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowDownRight, ArrowUpRight, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import type { Transaction } from "@/lib/finance";
 import { formatRupiah, getCategoryColor } from "@/lib/finance";
+import { useAuth } from "@/context/AuthContext";
 
 const CATEGORY_FILTERS = ["Belanja", "Freelance", "Gaji", "Hiburan", "Hutang", "Keinginan", "Investasi", "Kesehatan", "Keluarga", "Peliharaan", "Piutang", "Lainnya", "Makanan", "Tabungan", "Tagihan", "Transport"];
 const PAGE_SIZE = 21;
@@ -25,6 +26,7 @@ function cardDate(date: string): string {
 }
 
 export default function TransactionStream({ transactions, onDelete }: Props) {
+  const { role } = useAuth();
   const [category, setCategory] = useState("Semua Kategori");
   const [type, setType] = useState<"all" | "income" | "expense">("all");
   const [period, setPeriod] = useState<Period>(null);
@@ -141,7 +143,9 @@ export default function TransactionStream({ transactions, onDelete }: Props) {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <p className="truncate text-sm font-bold text-slate-800">{transaction.category}</p>
-                        <button onClick={() => onDelete(transaction.id)} aria-label={`Hapus ${transaction.description}`} className="text-slate-300 opacity-0 transition-all hover:text-red-500 group-hover:opacity-100"><Trash2 className="h-4 w-4" /></button>
+                        {role === "admin" && (
+                          <button onClick={() => onDelete(transaction.id)} aria-label={`Hapus ${transaction.description}`} className="text-slate-300 opacity-0 transition-all hover:text-red-500 group-hover:opacity-100"><Trash2 className="h-4 w-4" /></button>
+                        )}
                       </div>
                       <p className="text-xs text-slate-400">{cardDate(transaction.date)}</p>
                     </div>

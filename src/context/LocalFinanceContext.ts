@@ -13,6 +13,8 @@ export interface LocalFinanceContextValue {
   deleteTransaction: (id: string) => Promise<void>;
   addSaving: (saving: Omit<Saving, "id">) => Promise<void>;
   deleteSaving: (id: string) => Promise<void>;
+  addDebt: (debt: Omit<Debt, "id">) => Promise<void>;
+  deleteDebt: (id: string) => Promise<void>;
 }
 
 export interface FinanceImportResult {

@@ -5,10 +5,12 @@ import type { Saving } from "@/lib/finance";
 import { formatRupiah, getCategoryColor } from "@/lib/finance";
 import { useToast } from "@/components/ui/use-toast";
 import { useLocalFinance } from "@/context/LocalFinanceContext";
+import { useAuth } from "@/context/AuthContext";
 
 export default function SavingsPanel() {
   const { toast } = useToast();
   const { savings, addSaving, deleteSaving } = useLocalFinance();
+  const { role } = useAuth();
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
@@ -206,13 +208,15 @@ export default function SavingsPanel() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-sm font-bold text-slate-800">{saving.category || "Umum"}</p>
-                  <button
-                    onClick={() => handleDelete(saving.id)}
-                    aria-label={`Hapus ${saving.description}`}
-                    className="text-slate-300 opacity-0 transition-all hover:text-red-500 group-hover:opacity-100"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  {role === "admin" && (
+                    <button
+                      onClick={() => handleDelete(saving.id)}
+                      aria-label={`Hapus ${saving.description}`}
+                      className="text-slate-300 opacity-0 transition-all hover:text-red-500 group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400">
                   {new Date(`${saving.date}T12:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}
